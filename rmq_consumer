@@ -1,0 +1,79 @@
+<?php
+
+namespace App\Console\Commands;
+
+require __DIR__ . '/third_party/rabbitmq/vendor/autoload.php';
+require __DIR__ . '/config.php';
+
+use PhpAmqpLib\Connection\AMQPStreamConnection;
+use PhpAmqpLib\Message\AMQPMessage;
+use Illuminate\Console\Command;
+use Illuminate\Foundation\Inspiring;
+use DB;
+use Mail;
+
+class Send_consumer extends Command {
+
+    /**
+     * The console command name.
+     *
+     * @var string
+     */
+    protected $name = 'send_consumer';
+
+    /**
+     * The console command description.
+     *
+     * @var string
+     */
+    protected $description = '';
+
+    /**
+     * Execute the console command.
+     *
+     * @return mixed
+     */
+    public function handle() {
+
+        $connection = new AMQPStreamConnection(HOST, '5672', USERNAME, PSWD);
+        $channel = $connection->channel();
+        $channel->queue_declare('send', false, true, false, false);
+        $channel->exchange_declare('send', 'direct', true, false, false);
+        $callback = function($msg) {
+            $id = intval($msg->body);
+            $sqlSelect = "select * from send fsm left join automobiles fv on fsm.mail_auto_id=fv.auto_id where mail_status=0 and mail_id=" . $id;
+            $resultset = DB::select(DB::raw($sqlSelect));
+            $resultset = collect($resultset)->map(function($x) {
+                        return (array) $x;
+                    })->toArray();
+            foreach ($resultset as $key => $value) {
+                $this->sendMail($value["mail_subject"], $value["mail_desc"], $value["mail_to"], $value["mail_cc"]);
+                $sqlUpdate = "update send set mail_status=1 where mail_id=" . $value["mail_id"];
+                DB::statement(DB::raw($sqlUpdate));
+            }
+        };
+
+        $channel->basic_consume('send', 'send', false, true, false, false, $callback);
+        while (count($channel->callbacks)) {
+            $channel->wait();
+        }
+
+        $channel->close();
+        $connection->close();
+    }
+
+    function sendMail($subject, $description, $to, $cc) {
+        $data = array('subject' => $subject, 'description' => $description, 'to' => $to, 'cc' => $cc);
+
+         \Mail::send(['html' => 'email'], $data, function ($description) use ($data)
+          {
+
+          $description->from($data["to"], '');
+          $description->to($data['to']);
+          $description->cc($data['cc']);
+          $description->subject($data['subject']);
+
+          }); 
+    }
+
+}
