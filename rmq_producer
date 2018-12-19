@@ -1,0 +1,58 @@
+<?php
+
+namespace App\Console\Commands;
+
+require __DIR__ . '/third_party/rabbitmq/vendor/autoload.php';
+
+use PhpAmqpLib\Connection\AMQPStreamConnection;
+use PhpAmqpLib\Message\AMQPMessage;
+use Illuminate\Console\Command;
+use Illuminate\Foundation\Inspiring;
+use DB;
+
+class Send extends Command {
+
+    /**
+     * The console command name.
+     *
+     * @var string
+     */
+    protected $name = 'send';
+
+    /**
+     * The console command description.
+     *
+     * @var string
+     */
+    protected $description = '';
+
+    /**
+     * Execute the console command.
+     *
+     * @return mixed
+     */
+    public function handle() {
+
+        $connection = new AMQPStreamConnection(HOST, '5672', USERNAME, PSWD);
+        $channel = $connection->channel();
+        $channel->queue_declare('send', false, true, false, false);
+        $channel->exchange_declare('send', 'direct', true, false, false);
+        $sqlSelect = "select mail_id from send fsm left join automobile fv on fsm.mail_auto_id=fv.auto_id where mail_status=0 and mail_in_queue=0";
+        $resultset = DB::select(DB::raw($sqlSelect));
+        $resultset = collect($resultset)->map(function($x) {
+                    return (array) $x;
+                })->toArray();
+        if (count($resultset) > 0) {
+            foreach ($resultset as $key => $value) {
+                $mail_id = $value['mail_id'];
+                $msg = new AMQPMessage($mail_id, array('delivery_mode' => 2));
+                $channel->basic_publish($msg, 'send', 'send');
+                $sqlUpdate = "update send set mail_in_queue=1 where mail_id=" . $mail_id;
+                DB::statement(DB::raw($sqlUpdate));
+            }
+        }
+        $channel->close();
+        $connection->close();
+    }
+
+}
